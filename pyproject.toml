@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "goldfish-guards"
+version = "0.1.0"
+description = "Process guards for evidence-first engineering. First guard: a finding is FOLDED only when every target it names shows a diff."
+requires-python = ">=3.11"
+license = { text = "MIT" }
+readme = "README.md"
+
+[project.scripts]
+goldfish-guards = "goldfish_guards.cli:main_entry"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
