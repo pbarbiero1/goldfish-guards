@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "goldfish-guards"
-version = "0.1.0"
-description = "Process guards for evidence-first engineering. First guard: a finding is FOLDED only when every target it names shows a diff."
+version = "0.2.0"
+description = "Process guards for evidence-first engineering. fold-completeness: a finding is FOLDED only when every target it names shows a diff. secret-scan: a standing secret-scanner measured at the exposure point."
 requires-python = ">=3.11"
 license = { text = "MIT" }
 readme = "README.md"

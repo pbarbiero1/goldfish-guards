@@ -27,7 +27,7 @@ def run_cli_in(cwd, *args):
 def test_version_flag():
     code, out = run_cli("--version")
     assert code == 0
-    assert "goldfish-guards 0.1.0" in out
+    assert "goldfish-guards 0.2.0" in out
 
 
 def test_no_args_is_a_usage_error():
