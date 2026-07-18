@@ -154,6 +154,19 @@ def test_json_secret_value_leak_fires(tmp_path):
     assert BASIL_KEY not in out
 
 
+def test_json_non_secret_fields_are_not_watched(tmp_path):
+    """Only secret-named JSON fields (key/token/secret/password) are watched — a long
+    room TITLE appearing all over the docs must not become a phantom 'leak'."""
+    repo = make_repo(tmp_path)
+    (repo / "rooms.json").write_text(
+        '{"rooms": [{"id": "basil", "title": "The Basil Discussion Room", "key": "%s"}]}\n'
+        % BASIL_KEY
+    )
+    (repo / "notes.md").write_text("Welcome to The Basil Discussion Room\n")
+    code, out = run_scan(repo)
+    assert code == 0, out
+
+
 def test_gitignored_log_is_scanned(tmp_path):
     """The ugrep lesson: the leak surface IS the gitignored file. Raw walk or bust."""
     repo = make_repo(tmp_path)

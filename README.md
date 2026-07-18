@@ -30,7 +30,7 @@ it with more.
 ## Install (pinned)
 
 ```bash
-pip install "goldfish-guards @ git+https://github.com/pbarbiero1/goldfish-guards@v0.2.0"
+pip install "goldfish-guards @ git+https://github.com/pbarbiero1/goldfish-guards@v0.2.1"
 ```
 
 Pin a tag, record the tag's commit SHA next to the pin. Tags can move; SHAs cannot.
@@ -62,7 +62,9 @@ pass `--config`):
 secret_files = [".room_key", ".admin_key", ".telegram_token", "rooms.json"]  # REQUIRED
 served_dirs  = ["files"]        # dirs a server exposes; no secret-shaped file may live there
 # optional: secret_file_patterns, exclude, min_value_length (default 12),
-#           scan_history (default true), accept (fingerprints of triaged findings)
+#           json_value_keys (which JSON fields hold secrets; default key/token/
+#           secret/password/api_key), scan_history (default true),
+#           accept (fingerprints of triaged findings)
 ```
 
 ## Run

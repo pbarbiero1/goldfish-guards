@@ -116,15 +116,15 @@ def _load_watched_values(root, cfg, warnings):
                 continue
             if path.suffix == ".json":
                 try:
-                    found = _json_string_leaves(json.loads(text))
+                    found = _json_secret_leaves(json.loads(text), cfg.json_value_keys)
                 except ValueError as e:
                     warnings.append(f"secret file {rel} is not valid JSON: {e}")
                     continue
                 qualifying = [v for v in found if len(v) >= cfg.min_value_length]
                 if not qualifying:
                     warnings.append(
-                        f"secret file {rel}: no JSON string value ≥ "
-                        f"{cfg.min_value_length} chars — nothing to watch there"
+                        f"secret file {rel}: no string ≥ {cfg.min_value_length} chars "
+                        f"under a secret-named field — nothing to watch there"
                     )
                 for v in qualifying:
                     values.setdefault(v, set()).add(rel)
@@ -140,15 +140,18 @@ def _load_watched_values(root, cfg, warnings):
     return {v: sorted(h) for v, h in values.items()}, homes
 
 
-def _json_string_leaves(node):
+def _json_secret_leaves(node, value_keys, under_secret=False):
+    """String leaves under a secret-named field only. A JSON secret file also holds
+    ids, names, titles — watching those would turn prose into phantom leaks."""
     out = []
     if isinstance(node, dict):
-        for v in node.values():
-            out.extend(_json_string_leaves(v))
+        for k, v in node.items():
+            hit = under_secret or any(t in k.lower() for t in value_keys)
+            out.extend(_json_secret_leaves(v, value_keys, hit))
     elif isinstance(node, list):
         for v in node:
-            out.extend(_json_string_leaves(v))
-    elif isinstance(node, str):
+            out.extend(_json_secret_leaves(v, value_keys, under_secret))
+    elif isinstance(node, str) and under_secret:
         out.append(node)
     return out
 

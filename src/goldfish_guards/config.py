@@ -121,6 +121,14 @@ class SecretScanConfig:
         ".ruff_cache",
         "bin",
     )
+    json_value_keys: tuple[str, ...] = (
+        "key",
+        "token",
+        "secret",
+        "password",
+        "api_key",
+        "apikey",
+    )
     min_value_length: int = 12
     scan_history: bool = True
     accept: tuple[str, ...] = ()
@@ -131,6 +139,7 @@ _SECRET_KNOWN_KEYS = {
     "served_dirs",
     "secret_file_patterns",
     "exclude",
+    "json_value_keys",
     "min_value_length",
     "scan_history",
     "accept",
@@ -184,6 +193,7 @@ def load_secret_scan_config(repo_root: Path, config_path: Path | None = None) ->
         served_dirs=strings("served_dirs"),
         secret_file_patterns=strings("secret_file_patterns", SecretScanConfig.secret_file_patterns),
         exclude=strings("exclude", SecretScanConfig.exclude),
+        json_value_keys=strings("json_value_keys", SecretScanConfig.json_value_keys),
         min_value_length=min_len,
         scan_history=scan_history,
         accept=strings("accept"),
