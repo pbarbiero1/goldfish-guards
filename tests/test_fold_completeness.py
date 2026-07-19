@@ -933,7 +933,15 @@ def test_class_b_block_does_not_swallow_its_neighbour(tmp_path):
     direction: a target shows a change it never received.
 
     Here REQ-I490 is UNTOUCHED and only REQ-I491 is edited. The ledger claims REQ-I490 was
-    amended. That claim is FALSE and the guard MUST RED."""
+    amended. That claim is FALSE and the guard MUST RED.
+
+    !! DO NOT "FIX" THIS TEST TO GREEN. It is RED-BEFORE **and** RED-AFTER by design (Guillemot's
+    condition, 2026-07-19). Red-before proves nothing on its own: before the fix this fixture reds
+    for the WRONG reason — `unresolvable target` — not because the guard caught the lie. The real
+    assertion is red-AFTER, for the RIGHT reason. Same verdict, better reason. A future maintainer
+    reading this as a stale test and "correcting" it to green kills the control silently.
+
+    Hence the assertions below check the REASON, not just the exit code."""
     repo = paren_repo(
         tmp_path, FRS_PAREN_NEIGHBOUR_ONLY, ["| REQ-I490 | amend | (false claim) |"]
     )
@@ -943,3 +951,33 @@ def test_class_b_block_does_not_swallow_its_neighbour(tmp_path):
         f"which means the block swallowed the neighbour:\n{out}"
     )
     assert "REQ-I490" in out
+    # THE REASON, not merely the verdict. Post-fix the target MUST resolve, so a red citing
+    # `unresolvable` means resolution regressed and this test has stopped testing the boundary.
+    assert "no definition in any spec doc" not in out, (
+        "RED for the WRONG reason: REQ-I490 came back UNRESOLVABLE, so this test is no longer "
+        f"exercising the block boundary at all — it is passing on a resolution failure:\n{out}"
+    )
+    assert "0/1 checkable target(s) show a diff" in out, (
+        f"expected the boundary verdict (target resolved, no diff of its own):\n{out}"
+    )
+
+
+def test_class_b_block_has_its_own_extent_not_its_neighbours(tmp_path):
+    """EXACT-LENGTH assertion (Guillemot's condition 2, 2026-07-19).
+
+    "Does not overrun" is too weak: the failing shape is a block that is *plausibly* long. On the
+    live FRS the narrow fix gave REQ-I490 a 122-line block that swallowed FOUR consecutive class-B
+    neighbours (I491–I494), because every boundary between them was invisible. A test asserting
+    only "shorter than the file" would have passed on that.
+
+    So assert the extent directly, at the block level, against the real extractor."""
+    import goldfish_guards.fold_completeness as fc
+
+    blocks = fc.extract_blocks(FRS_PAREN_BASE, "REQ-I490")
+    assert len(blocks) == 1, f"expected exactly one definition site, got {len(blocks)}"
+    body = blocks[0]
+    assert "REQ-I491" not in body, (
+        "REQ-I490's block contains its NEIGHBOUR's definition — the boundary is invisible and a "
+        f"diff to REQ-I491 would be credited to REQ-I490:\n{body}"
+    )
+    assert "Taxonomy check" in body, f"block lost its own content:\n{body}"
