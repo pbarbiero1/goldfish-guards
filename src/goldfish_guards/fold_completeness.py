@@ -310,18 +310,43 @@ def show(ref, path):
         return None
 
 
+# An optional parenthetical cross-reference, e.g. ` (URS REQ-SET-029)` or ` (URS REQ-WRK-101 §8.6.1)`.
+# Spec docs put it on EITHER side of the closing `**`, and both are definitions:
+#   class A, inside the bold:   - **REQ-I225 (URS REQ-SET-029)**: ...
+#   class B, outside the bold:  - **REQ-I490** (URS REQ-WRK-101 §8.6.1): ...
+# Non-greedy and `[^)]` so it can never span past its own closing paren onto another target.
+_PAREN = r"(?:\s*\([^)]*\))?"
+
+
 def definition_start_re(target):
-    """Match the line that DEFINES a target — the three shapes the spec docs actually use:
-    `- **REQ-I221**: ...`  ·  `- **AC-1357:** ...`  ·  `### DECISION-031: ...`
+    """Match the line that DEFINES a target — the shapes the spec docs actually use:
+    `- **REQ-I221**: ...` · `- **AC-1357:** ...` · `### DECISION-031: ...`
+    each optionally carrying a parenthetical URS cross-reference inside OR outside the bold
+    (`- **REQ-I225 (URS REQ-SET-029)**:` · `- **REQ-I490** (URS REQ-WRK-101 §8.6.1):`).
     Bullets must sit at column 0: an indented `- **REQ-I010 ...**` inside a block is a
-    cross-reference, not a definition."""
+    cross-reference, not a definition.
+
+    The parenthetical shapes were unmatched until 2026-07-19. On the finance-app FRS that made
+    25 of 454 real targets UNRESOLVABLE (10 class A, 15 class B) — and because the guard's
+    failure text offers `cite-only` as the way out, it pushed seats to under-declare their own
+    amendments. A completeness guard satisfiable by claiming you changed less than you did is
+    inverted in the dimension it exists to protect. Keep this in step with ANY_DEF_RE below:
+    the two disagreeing is what let class B through the first fix attempt."""
     t = re.escape(target)
-    return re.compile(rf"^(?:-\s+\*\*{t}\*\*\s*:|-\s+\*\*{t}\s*:\*\*|#{{2,6}}\s+{t}\s*:)")
+    return re.compile(
+        rf"^(?:-\s+\*\*{t}{_PAREN}\*\*{_PAREN}\s*:"
+        rf"|-\s+\*\*{t}{_PAREN}\s*:\*\*"
+        rf"|#{{2,6}}\s+{t}\s*:)"
+    )
 
 
 # A block runs until the next definition of ANY id, any heading, or a horizontal rule.
+# MUST recognise exactly the shapes definition_start_re does: if this misses a shape that one
+# matches, a block runs PAST its own end into the next definition — and a diff to the NEIGHBOUR
+# is then credited to this target. That is a FALSE GREEN in a completeness guard, i.e. worse
+# than the false red it would be fixing. (2026-07-19: class B was missing from both.)
 ANY_DEF_RE = re.compile(
-    r"^(?:-\s+\*\*(?:REQ-|AC-|DECISION-)[^*]+\*\*\s*:"
+    r"^(?:-\s+\*\*(?:REQ-|AC-|DECISION-)[^*]+\*\*(?:\s*\([^)]*\))?\s*:"
     r"|-\s+\*\*(?:REQ-|AC-|DECISION-)[^*]+:\*\*"
     r"|#{1,6}\s"
     r"|---\s*$)"

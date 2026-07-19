@@ -30,7 +30,7 @@ it with more.
 ## Install (pinned)
 
 ```bash
-pip install "goldfish-guards @ git+https://github.com/pbarbiero1/goldfish-guards@v0.2.1"
+pip install "goldfish-guards @ git+https://github.com/pbarbiero1/goldfish-guards@v0.2.2"
 ```
 
 Pin a tag, record the tag's commit SHA next to the pin. Tags can move; SHAs cannot.

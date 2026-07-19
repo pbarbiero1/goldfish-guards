@@ -125,6 +125,7 @@ def make_repo(
     verdict=VERDICT,
     verdict_rel="docs/audits/GPT_DELTA_VERDICT.md",
     verdict_head=None,
+    frs_base=None,
 ):
     """A real repo shaped like the real one: main holds the pre-fold spec; a branch holds the fold.
 
@@ -135,6 +136,11 @@ def make_repo(
     verdict_rel     — where the verdict lives (a subfolder path exercises the Leg C recursion).
     verdict_head    — if set, the verdict is REWRITTEN to this on the branch (exercises the
                       appended-finding-to-an-existing-verdict case; implies the verdict is on base).
+    frs_base        — the FRS on the BASE commit; defaults to FRS_BASE. Pass it whenever `frs` is
+                      not a variant of FRS_BASE, or the target's whole definition is NEW on the
+                      branch and "shows a diff" is trivially true — a VACUOUS pass. (2026-07-19:
+                      the parenthetical tests were written without this and passed for exactly
+                      that wrong reason; the block-boundary test is what exposed it.)
     """
     repo = tmp_path / "repo"
     (repo / "docs" / "audits" / "folds").mkdir(parents=True)
@@ -149,7 +155,7 @@ def make_repo(
     git(repo, "init", "-b", "main")
     git(repo, "config", "user.email", "tripwire@test")
     git(repo, "config", "user.name", "tripwire")
-    frs_path.write_text(FRS_BASE, encoding="utf-8")
+    frs_path.write_text(frs_base if frs_base is not None else FRS_BASE, encoding="utf-8")
     ac_path.write_text(AC_BASE, encoding="utf-8")
     if not verdict_on_branch:
         verdict_path.write_text(verdict, encoding="utf-8")
@@ -815,3 +821,163 @@ def test_open_status_still_requires_enumeration(tmp_path):
     code, out = run_guard(repo)
     assert code == 1, f"an open finding silently dropped AC-1357:\n{out}"
     assert "LEG A" in out and "AC-1357" in out
+
+
+# =============================================================================================
+# 2c. PARENTHETICAL DEFINITIONS — the 2026-07-19 defect (Guillemot found class A; measuring it
+# surfaced class B). `definition_start_re` accepted only a bare id between the bold markers, so a
+# REQ whose definition carries a parenthetical URS cross-reference was UNRESOLVABLE. Measured on
+# the live finance-app FRS: 429 of 454 real targets resolved, 25 did not — 10 class A, 15 class B.
+#
+# Why this mattered more than a false red: the guard's own message invites the seat to relabel the
+# target `cite-only` (= "named but not touched") to get green. A completeness guard that can be
+# satisfied by UNDER-DECLARING your own amendment is inverted in the exact dimension it protects.
+#
+# Class A  parenthetical INSIDE the bold:   - **REQ-I225 (URS REQ-SET-029)**: ...
+# Class B  parenthetical OUTSIDE the bold:  - **REQ-I490** (URS REQ-WRK-101 §8.6.1): ...
+# =============================================================================================
+
+FRS_PAREN_BASE = """# FRS
+
+- **REQ-I225 (URS REQ-SET-029)**: **Tag management is user-defined.** The system shall let the
+  user define tags.
+
+  **Tier:** MVP
+
+- **REQ-I490** (URS REQ-WRK-101 §8.6.1): **Taxonomy check.** The system shall implement the
+  taxonomy check as originally worded.
+
+  **Tier:** MVP
+
+- **REQ-I491** (URS REQ-WRK-102 §8.6.1): **Uncategorized check — the NEIGHBOUR.** This block must
+  never be swallowed into REQ-I490's block; if it is, a diff here would falsely credit REQ-I490.
+
+  **Tier:** MVP
+"""
+
+FRS_PAREN_A_FOLDED = FRS_PAREN_BASE.replace(
+    "The system shall let the\n  user define tags.",
+    "The system shall let the\n  user define tags, and shall expose a canonical read surface.",
+)
+
+FRS_PAREN_B_FOLDED = FRS_PAREN_BASE.replace(
+    "taxonomy check as originally worded.",
+    "taxonomy check with the amended, folded wording.",
+)
+
+# The false-green fixture: REQ-I490 itself is UNTOUCHED; only its NEIGHBOUR REQ-I491 changes.
+FRS_PAREN_NEIGHBOUR_ONLY = FRS_PAREN_BASE.replace(
+    "This block must\n  never be swallowed",
+    "This block was edited and must\n  never be swallowed",
+)
+
+PAREN_VERDICT = """**Delta Verdict: GO-WITH-FIXES**
+
+| Severity | Finding | Evidence | Fix |
+|---|---|---|---|
+| MUST-FIX | Parenthetical-definition targets are unresolvable. | FRS:3 | Amend the named REQ. |
+"""
+
+PAREN_LEDGER = """# Fold ledger — the delta gate
+
+**source:** `docs/audits/GPT_DELTA_VERDICT.md`
+
+## F1 · MUST-FIX · parenthetical definition
+**anchor:** Amend the named REQ
+**status:** folded
+
+| target | disposition | evidence |
+|---|---|---|
+{rows}
+"""
+
+
+def paren_repo(tmp_path, frs, rows):
+    """Base commit carries FRS_PAREN_BASE, so the parenthetical REQs EXIST on BOTH sides and only
+    the intended text moves. Without this the whole definition is new on the branch and every
+    "shows a diff" is vacuously true — see make_repo's frs_base note. These three tests were
+    first written without it and two of them passed for exactly that wrong reason."""
+    return make_repo(
+        tmp_path,
+        frs=frs,
+        frs_base=FRS_PAREN_BASE,
+        ac=AC_BASE,
+        ledger=PAREN_LEDGER.format(rows="\n".join(rows)),
+        verdict=PAREN_VERDICT,
+    )
+
+
+def test_class_a_parenthetical_inside_bold_resolves(tmp_path):
+    """RED-PROOF (class A, Guillemot's 10). `- **REQ-I225 (URS REQ-SET-029)**:` is a definition.
+    A genuine amendment to it must GREEN. Before the fix the target was unresolvable, so an
+    honest `amend` could not pass and the seat was pushed toward `cite-only`."""
+    repo = paren_repo(
+        tmp_path, FRS_PAREN_A_FOLDED, ["| REQ-I225 | amend | canonical read surface |"]
+    )
+    code, out = run_guard(repo)
+    assert code == 0, f"class-A parenthetical definition did not resolve:\n{out}"
+
+
+def test_class_b_parenthetical_outside_bold_resolves(tmp_path):
+    """RED-PROOF (class B, the 15 the one-line fix would have missed). `- **REQ-I490** (URS ...):`
+    is also a definition — the parenthetical sits OUTSIDE the closing `**`."""
+    repo = paren_repo(tmp_path, FRS_PAREN_B_FOLDED, ["| REQ-I490 | amend | amended wording |"])
+    code, out = run_guard(repo)
+    assert code == 0, f"class-B parenthetical definition did not resolve:\n{out}"
+
+
+def test_class_b_block_does_not_swallow_its_neighbour(tmp_path):
+    """THE FALSE-GREEN GUARD, and the reason this fix is two patterns rather than one.
+
+    `ANY_DEF_RE` (the block-BOUNDARY detector) shared the same blind spot. Widen target
+    resolution alone and REQ-I490's block runs past its own end into REQ-I491 — so a diff to the
+    NEIGHBOUR would be credited to REQ-I490. In a completeness guard that is the dangerous
+    direction: a target shows a change it never received.
+
+    Here REQ-I490 is UNTOUCHED and only REQ-I491 is edited. The ledger claims REQ-I490 was
+    amended. That claim is FALSE and the guard MUST RED.
+
+    !! DO NOT "FIX" THIS TEST TO GREEN. It is RED-BEFORE **and** RED-AFTER by design (Guillemot's
+    condition, 2026-07-19). Red-before proves nothing on its own: before the fix this fixture reds
+    for the WRONG reason — `unresolvable target` — not because the guard caught the lie. The real
+    assertion is red-AFTER, for the RIGHT reason. Same verdict, better reason. A future maintainer
+    reading this as a stale test and "correcting" it to green kills the control silently.
+
+    Hence the assertions below check the REASON, not just the exit code."""
+    repo = paren_repo(tmp_path, FRS_PAREN_NEIGHBOUR_ONLY, ["| REQ-I490 | amend | (false claim) |"])
+    code, out = run_guard(repo)
+    assert code == 1, (
+        "REQ-I490 was NOT touched — only its neighbour REQ-I491 was. The guard greened, "
+        f"which means the block swallowed the neighbour:\n{out}"
+    )
+    assert "REQ-I490" in out
+    # THE REASON, not merely the verdict. Post-fix the target MUST resolve, so a red citing
+    # `unresolvable` means resolution regressed and this test has stopped testing the boundary.
+    assert "no definition in any spec doc" not in out, (
+        "RED for the WRONG reason: REQ-I490 came back UNRESOLVABLE, so this test is no longer "
+        f"exercising the block boundary at all — it is passing on a resolution failure:\n{out}"
+    )
+    assert "0/1 checkable target(s) show a diff" in out, (
+        f"expected the boundary verdict (target resolved, no diff of its own):\n{out}"
+    )
+
+
+def test_class_b_block_has_its_own_extent_not_its_neighbours(tmp_path):
+    """EXACT-LENGTH assertion (Guillemot's condition 2, 2026-07-19).
+
+    "Does not overrun" is too weak: the failing shape is a block that is *plausibly* long. On the
+    live FRS the narrow fix gave REQ-I490 a 122-line block that swallowed FOUR consecutive class-B
+    neighbours (I491–I494), because every boundary between them was invisible. A test asserting
+    only "shorter than the file" would have passed on that.
+
+    So assert the extent directly, at the block level, against the real extractor."""
+    import goldfish_guards.fold_completeness as fc
+
+    blocks = fc.extract_blocks(FRS_PAREN_BASE, "REQ-I490")
+    assert len(blocks) == 1, f"expected exactly one definition site, got {len(blocks)}"
+    body = blocks[0]
+    assert "REQ-I491" not in body, (
+        "REQ-I490's block contains its NEIGHBOUR's definition — the boundary is invisible and a "
+        f"diff to REQ-I491 would be credited to REQ-I490:\n{body}"
+    )
+    assert "Taxonomy check" in body, f"block lost its own content:\n{body}"
