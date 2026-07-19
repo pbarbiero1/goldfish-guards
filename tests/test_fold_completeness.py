@@ -911,7 +911,9 @@ def test_class_a_parenthetical_inside_bold_resolves(tmp_path):
     """RED-PROOF (class A, Guillemot's 10). `- **REQ-I225 (URS REQ-SET-029)**:` is a definition.
     A genuine amendment to it must GREEN. Before the fix the target was unresolvable, so an
     honest `amend` could not pass and the seat was pushed toward `cite-only`."""
-    repo = paren_repo(tmp_path, FRS_PAREN_A_FOLDED, ["| REQ-I225 | amend | canonical read surface |"])
+    repo = paren_repo(
+        tmp_path, FRS_PAREN_A_FOLDED, ["| REQ-I225 | amend | canonical read surface |"]
+    )
     code, out = run_guard(repo)
     assert code == 0, f"class-A parenthetical definition did not resolve:\n{out}"
 
@@ -942,9 +944,7 @@ def test_class_b_block_does_not_swallow_its_neighbour(tmp_path):
     reading this as a stale test and "correcting" it to green kills the control silently.
 
     Hence the assertions below check the REASON, not just the exit code."""
-    repo = paren_repo(
-        tmp_path, FRS_PAREN_NEIGHBOUR_ONLY, ["| REQ-I490 | amend | (false claim) |"]
-    )
+    repo = paren_repo(tmp_path, FRS_PAREN_NEIGHBOUR_ONLY, ["| REQ-I490 | amend | (false claim) |"])
     code, out = run_guard(repo)
     assert code == 1, (
         "REQ-I490 was NOT touched — only its neighbour REQ-I491 was. The guard greened, "
