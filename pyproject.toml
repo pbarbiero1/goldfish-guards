@@ -12,6 +12,7 @@ readme = "README.md"
 
 [project.scripts]
 goldfish-guards = "goldfish_guards.cli:main_entry"
+fold-scaffold = "goldfish_guards.fold_scaffold:main_entry"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.4"]
