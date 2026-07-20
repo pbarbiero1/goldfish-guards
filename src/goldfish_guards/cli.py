@@ -12,6 +12,7 @@ usage: goldfish-guards <command> [options]
 
 commands:
   fold-completeness   A finding is FOLDED only when every target it names shows a diff.
+  fold-scaffold       Print a copy-paste .fold.md skeleton (rules inline).
   secret-scan         Standing secret-scanner: live-value, placement, token-shape.
 
 options:
@@ -36,6 +37,10 @@ def main(argv=None):
         from goldfish_guards import fold_completeness
 
         return fold_completeness.main(rest)
+    if cmd == "fold-scaffold":
+        from goldfish_guards import fold_scaffold
+
+        return fold_scaffold.main(rest)
     if cmd == "secret-scan":
         from goldfish_guards import secret_scan
 
