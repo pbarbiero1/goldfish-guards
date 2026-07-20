@@ -526,9 +526,21 @@ def test_guard_announces_when_it_cannot_parse_a_verdicts_findings(tmp_path):
         "**Verdict: GO-WITH-FIXES**\n\n"
         "Finding 1: this is major — the stale design draft still tells the old story.\n"
     )
-    ledger = LEDGER.format(status="folded", rows="").replace(
-        "**anchor:** Amend REQ-I221/AC-1357 so taxonomy-gap resolution",
-        "**anchor:** this is major",
+    # Ballot #39: this folded entry has an empty MACHINE table (the fix is a doc banner, not a spec
+    # ID), so it declares its disposition on the record as a `**prose targets:**` line — otherwise
+    # the new FG-1/FG-6 empty-target check would (correctly) RED it as a silent zero and this test
+    # would stop isolating the ⚠ self-diagnostic it exists to prove.
+    ledger = (
+        LEDGER.format(status="folded", rows="")
+        .replace(
+            "**anchor:** Amend REQ-I221/AC-1357 so taxonomy-gap resolution",
+            "**anchor:** this is major",
+        )
+        .replace(
+            "**status:** folded\n",
+            "**status:** folded\n**prose targets:** the stale design draft gets a superseded "
+            "banner\n",
+        )
     )
     repo = make_repo(
         tmp_path,
@@ -981,3 +993,147 @@ def test_class_b_block_has_its_own_extent_not_its_neighbours(tmp_path):
         f"diff to REQ-I491 would be credited to REQ-I490:\n{body}"
     )
     assert "Taxonomy check" in body, f"block lost its own content:\n{body}"
+
+
+# =============================================================================================
+# BALLOT #39 (narrow form) — FG-1/FG-6 STRUCTURAL CLOSE + the pattern-alignment pin.
+#
+# FG-1/FG-6 (MEASURED by an adversarial control): `finding_spans` ends a prose finding at the first
+# blank line, so a HEADING-SHAPED finding — `### MUST-FIX 1 — title`, a blank line, then a body
+# naming the spec IDs — parses as the TITLE ALONE. Its body (where the IDs live) falls OUTSIDE the
+# finding, so Leg A demands ZERO targets; pair that with a `status: folded` entry whose target table
+# is empty and the whole fold greens on work that never happened. The zero-findings silence-alarm is
+# blind to it because the heading DOES parse as a finding — it is merely hollow (4 findings parse,
+# 0 targets demanded).
+#
+# The narrow fix: a `folded` (completion-claiming) entry whose parsed target table is EMPTY, with no
+# declared prose target, is a hard RED. A legitimately prose-only fold (its target is a doc banner,
+# not a spec ID — scope limit #2) declares a `**prose targets:**` line and stays green: the SILENT
+# zero is the enemy, the on-the-record one is not.
+# =============================================================================================
+
+HOLLOW_HEADING_VERDICT = """**Delta Verdict: GO-WITH-FIXES**
+
+### MUST-FIX 1 — resolve-state drift
+
+Amend REQ-I221 and AC-1357 so taxonomy-gap resolution sets the paired state atomically.
+"""
+
+HOLLOW_EMPTY_LEDGER = """# Fold ledger — the delta gate
+
+**source:** `docs/audits/GPT_DELTA_VERDICT.md`
+
+## F1 · MUST-FIX · resolve-state drift
+**anchor:** MUST-FIX 1 — resolve-state drift
+**status:** folded
+
+| target | disposition | evidence |
+|---|---|---|
+"""
+
+
+def test_folded_entry_with_empty_target_table_goes_red(tmp_path):
+    """🔴 FG-1/FG-6 POSITIVE CONTROL (ballot #39). The heading-shaped finding truncates at the blank
+    line, so Leg A names zero targets and the folded ledger entry carries an EMPTY table. Before the
+    fix the guard GREENED on this hollow fold; it must now RED, naming the empty-target cause."""
+    repo = make_repo(
+        tmp_path,
+        frs=FRS_BASE,
+        ac=AC_BASE,
+        verdict=HOLLOW_HEADING_VERDICT,
+        verdict_on_branch=True,
+        ledger=HOLLOW_EMPTY_LEDGER,
+    )
+    code, out = run_guard(repo)
+    assert code == 1, (
+        f"a folded entry with zero parsed targets greened (the FG-1/FG-6 hole):\n{out}"
+    )
+    assert "zero parsed targets" in out, f"the RED must name the empty-target cause:\n{out}"
+
+
+def test_folded_entry_with_real_targets_does_not_trip_the_empty_table_red(tmp_path):
+    """🟢 FG-1/FG-6 NEGATIVE CONTROL. A normal folded entry whose table lists real targets that show
+    a diff stays green and never emits the empty-target red — otherwise the check is just noise."""
+    repo = make_repo(tmp_path, frs=FRS_FOLDED, ac=AC_FOLDED, ledger=ledger_for(BOTH_AMEND))
+    code, out = run_guard(repo)
+    assert code == 0, f"a complete fold tripped the empty-target red:\n{out}"
+    assert "zero parsed targets" not in out
+
+
+def test_folded_prose_only_target_is_exempt_from_the_empty_table_red(tmp_path):
+    """🟢 FG-1/FG-6 EXEMPTION. A fold whose ONLY disposition is a PROSE target (a doc banner, not a
+    spec ID — scope limit #2) legitimately has an empty MACHINE table. Because it DECLARES that
+    prose target on the record, it is not a silent zero and stays green. This keeps the empty-target
+    check from crying wolf on the honest prose fold the repo actually produces."""
+    verdict = HOLLOW_HEADING_VERDICT.replace(
+        "Amend REQ-I221 and AC-1357 so taxonomy-gap resolution sets the paired state atomically.",
+        "The stale design draft still tells the old story; give it a superseded banner.",
+    )
+    ledger = HOLLOW_EMPTY_LEDGER.rstrip() + (
+        "\n**prose targets:** the stale design draft gets a SUPERSEDED banner\n"
+    )
+    repo = make_repo(
+        tmp_path, frs=FRS_BASE, ac=AC_BASE, verdict=verdict, verdict_on_branch=True, ledger=ledger
+    )
+    code, out = run_guard(repo)
+    assert code == 0, f"an on-the-record prose-only fold was false-redded:\n{out}"
+    assert "zero parsed targets" not in out
+
+
+def test_green_summary_states_reading_is_still_the_guarantee(tmp_path):
+    """Keeper's condition (ballot #39): the guard must not inflate its promise. Every GREEN prints
+    one standing line saying a green certifies COMPLETENESS, never CONTENT — the read is the
+    guarantee."""
+    repo = make_repo(tmp_path, frs=FRS_FOLDED, ac=AC_FOLDED, ledger=ledger_for(BOTH_AMEND))
+    code, out = run_guard(repo)
+    assert code == 0, f"the complete fold should be green:\n{out}"
+    assert "the read is still the guarantee" in out, (
+        f"the green summary must carry the reading-stays-load-bearing line:\n{out}"
+    )
+
+
+# ---- PIN THE ALIGNMENT (ballot #39 task 2) --------------------------------------------------
+# `definition_start_re(target)` (LOCATES a target's block) and `ANY_DEF_RE` (ENDS a block at the
+# next definition) are OBLIGED to recognize the same definition SHAPES. Formerly this was kept in
+# step only by a comment ("MUST recognise exactly the shapes definition_start_re does"). One real
+# line per known shape, run through BOTH patterns, turns that comment into a failing assertion.
+DEFINITION_SHAPES = [
+    ("REQ-I221", "- **REQ-I221**: The system shall clear the queue."),  # bare bullet
+    ("AC-1357", "- **AC-1357:** Given a note, then the server resolves it."),  # colon inside bold
+    ("DECISION-031", "### DECISION-031: taxonomy gap flag."),  # heading
+    # class A — parenthetical INSIDE the bold:
+    ("REQ-I225", "- **REQ-I225 (URS REQ-SET-029)**: Tag management is user-defined."),
+    # class B — parenthetical OUTSIDE the bold:
+    ("REQ-I490", "- **REQ-I490** (URS REQ-WRK-101 §8.6.1): Taxonomy check."),
+]
+
+
+def test_both_definition_patterns_recognize_every_shape():
+    """PIN THE ALIGNMENT, not the comment. If ANY_DEF_RE misses a shape that definition_start_re
+    matches, a block runs PAST its own end into the next definition and a diff to the NEIGHBOUR is
+    credited to this target — a FALSE GREEN in a completeness guard, worse than the false red it
+    would fix. Both patterns (all copies of the definition sub-pattern) must agree on every shape."""
+    import goldfish_guards.fold_completeness as fc
+
+    for target, line in DEFINITION_SHAPES:
+        assert fc.definition_start_re(target).match(line), (
+            f"definition_start_re({target!r}) failed to match its own definition shape:\n{line}"
+        )
+        assert fc.ANY_DEF_RE.match(line), (
+            f"ANY_DEF_RE failed to match a definition shape that definition_start_re matches — the "
+            f"block boundary is invisible here, so a neighbour's diff would be miscredited:\n{line}"
+        )
+
+
+def test_the_two_definition_patterns_share_one_paren_sub_pattern():
+    """The v0.2.2 hand-inlined a third copy of the parenthetical sub-pattern into ANY_DEF_RE. It is
+    now folded back to the single shared `_PAREN`, so the two patterns cannot drift on the paren
+    shape. Assert the module exposes exactly one canonical sub-pattern and that ANY_DEF_RE is built
+    from it (no stray literal copy remains)."""
+    import goldfish_guards.fold_completeness as fc
+
+    assert fc._PAREN == r"(?:\s*\([^)]*\))?", "the canonical paren sub-pattern moved unexpectedly"
+    # The class-B shape exercises the paren OUTSIDE the bold in BOTH patterns; if a copy of the
+    # sub-pattern were dropped from either, this shape would stop matching.
+    class_b = "- **REQ-I490** (URS REQ-WRK-101 §8.6.1): Taxonomy check."
+    assert fc.ANY_DEF_RE.match(class_b) and fc.definition_start_re("REQ-I490").match(class_b)
