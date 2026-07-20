@@ -341,15 +341,19 @@ def definition_start_re(target):
 
 
 # A block runs until the next definition of ANY id, any heading, or a horizontal rule.
-# MUST recognise exactly the shapes definition_start_re does: if this misses a shape that one
-# matches, a block runs PAST its own end into the next definition — and a diff to the NEIGHBOUR
-# is then credited to this target. That is a FALSE GREEN in a completeness guard, i.e. worse
-# than the false red it would be fixing. (2026-07-19: class B was missing from both.)
+# This MUST recognise exactly the shapes definition_start_re does: if it misses a shape that one
+# matches, a block runs PAST its own end into the next definition — and a diff to the NEIGHBOUR is
+# then credited to this target. That is a FALSE GREEN in a completeness guard, i.e. worse than the
+# false red it would be fixing. (2026-07-19: class B was missing from both.) The obligation is no
+# longer only a comment: `test_both_definition_patterns_recognize_every_shape` runs a table of real
+# definition shapes through BOTH patterns and fails if either misses one. The parenthetical
+# sub-pattern is the SHARED `_PAREN` — ballot #39: v0.2.2 had hand-inlined a third copy of it here,
+# free to drift; now there is one source.
 ANY_DEF_RE = re.compile(
-    r"^(?:-\s+\*\*(?:REQ-|AC-|DECISION-)[^*]+\*\*(?:\s*\([^)]*\))?\s*:"
-    r"|-\s+\*\*(?:REQ-|AC-|DECISION-)[^*]+:\*\*"
-    r"|#{1,6}\s"
-    r"|---\s*$)"
+    rf"^(?:-\s+\*\*(?:REQ-|AC-|DECISION-)[^*]+\*\*{_PAREN}\s*:"
+    rf"|-\s+\*\*(?:REQ-|AC-|DECISION-)[^*]+:\*\*"
+    rf"|#{{1,6}}\s"
+    rf"|---\s*$)"
 )
 
 
@@ -415,9 +419,15 @@ def locate_definition(target, ref, extra_specs):
 # Ledger parsing
 # --------------------------------------------------------------------------------------------
 
-FIELD_RE = re.compile(
-    r"^\*\*(source|anchor|status|extra specs|prose targets)\s*:\*\*\s*(.*)$", re.I
-)
+FIELD_RE = re.compile(r"^\*\*(source|anchor|status|extra specs)\s*:\*\*\s*(.*)$", re.I)
+
+# The `**prose targets:**` line — the human-checked, machine-UNCHECKED disposition (scope limit #2:
+# a target named in prose, e.g. "give the draft a SUPERSEDED banner", names no spec ID and cannot be
+# diff-verified). Parsed with its own regex, not FIELD_RE's, because the real ledger writes it with a
+# clarifying parenthetical the key-exact FIELD_RE never matched — e.g.
+# `**prose targets (NOT machine-checked):** ...`. A non-empty value here is an ON-THE-RECORD claim,
+# which is what exempts a prose-only fold from the FG-1/FG-6 empty-target RED (ballot #39).
+PROSE_TARGETS_RE = re.compile(r"^\*\*\s*prose targets\b.*?:\*\*\s*(\S.*)$", re.I)
 
 
 def _clean(cell):
@@ -432,6 +442,7 @@ class Entry:
         self.anchor = None  # verbatim substring locating the finding in the verdict
         self.status = None
         self.extra_specs = []
+        self.prose_targets = None  # the on-the-record, human-checked target line (unchecked here)
         self.targets = {}  # id -> disposition
         self.evidence = {}  # id -> the evidence cell (carries the SHA for `prior-fold`)
         self.errors = []
@@ -446,10 +457,13 @@ def parse_ledger(path, text):
     for raw in text.splitlines():
         line = raw.strip()
         field = FIELD_RE.match(line)
+        prose = PROSE_TARGETS_RE.match(line)
         if line.startswith("## "):
             current = Entry(path, line[3:].strip())
             current.source = doc_source  # ledger-level source is the default
             entries.append(current)
+        elif prose and current is not None:
+            current.prose_targets = prose.group(1).strip()
         elif field:
             key, value = field.group(1).lower(), field.group(2).strip()
             value_clean = _clean(value)
@@ -500,7 +514,11 @@ def parse_ledger(path, text):
     #
     # A section with SOME of those fields is a half-written entry, and that IS a failure — it stays,
     # and its missing status/anchor reds. Fail closed on partial, ignore pure narrative.
-    return [e for e in entries if e.anchor or e.status or e.targets or e.errors or e.extra_specs]
+    return [
+        e
+        for e in entries
+        if e.anchor or e.status or e.targets or e.errors or e.extra_specs or e.prose_targets
+    ]
 
 
 def row_cells(line):
@@ -723,6 +741,22 @@ def check_entry(entry, base, head, out):
         out.append(f"    status={entry.status} — Leg B (diff) not applicable")
         return failures
 
+    # ---- FG-1/FG-6 (ballot #39): a folded (completion-claiming) entry whose parsed target table is
+    # EMPTY, with no declared prose target, is a SILENT ZERO. The measured symptom is a heading-
+    # shaped finding (`### MUST-FIX 1 — title` then a blank line) that `finding_spans` truncates at
+    # the blank line, so the body naming the spec IDs falls outside the finding, Leg A demands
+    # nothing, and an empty table sails through green. The zero-findings silence-alarm cannot see it
+    # (the heading DOES parse as a finding — it is merely hollow). A prose-only fold (scope limit #2)
+    # declares a `**prose targets:**` line and is exempt: the silent zero is the enemy, not the
+    # on-the-record one. This is a completeness tripwire, NOT a parser fix — the read stays the
+    # guarantee. ----
+    if not entry.targets and not entry.prose_targets:
+        failures.append(
+            f"{tag}: folded with zero parsed targets — parser may have missed the body; "
+            f"check the finding's shape"
+        )
+        return failures
+
     # ---- LEG B: every `amend` target must show a material diff in base..head ----
     amend = sorted(t for t, d in entry.targets.items() if d == "amend")
     touched = 0
@@ -895,6 +929,13 @@ def check_unlogged_verdicts(base, head, ledgers, out):
     return failures
 
 
+# Ballot #39, keeper's condition. One honest line, printed on every green — not a lecture.
+READING_IS_THE_GUARANTEE = (
+    "  green = every claimed target shows a diff; it does not verify the fold's content — "
+    "the read is still the guarantee."
+)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base", help="baseline ref (default: merge-base with origin/main)")
@@ -1001,8 +1042,12 @@ def main(argv=None):
         for tag in open_entries:
             print(f"  ◻ {tag}")
         print("  Open findings are enumerated, not folded — their fixes are not in this branch.")
-        return 0
-    print(f"\n✅ FOLD-COMPLETENESS: {total_entries} finding(s) complete.")
+    else:
+        print(f"\n✅ FOLD-COMPLETENESS: {total_entries} finding(s) complete.")
+    # Keeper's condition (ballot #39) — "reading must stay load-bearing." Said out loud on EVERY
+    # green so the guard never inflates its own promise: a green certifies COMPLETENESS (every
+    # claimed target moved), never CONTENT (that the move was right). See scope limit #1.
+    print(READING_IS_THE_GUARANTEE)
     return 0
 
 
