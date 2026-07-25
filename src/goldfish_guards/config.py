@@ -204,3 +204,77 @@ def load_secret_scan_config(repo_root: Path, config_path: Path | None = None) ->
             f"watches no secrets checks nothing."
         )
     return cfg
+
+
+# ---------------------------------------------------------------------------------
+# vacuity-lint (guard C) — same refuse-to-guess discipline, its own table
+# ---------------------------------------------------------------------------------
+
+VACUITY_TABLE = ("tool", "goldfish-guards", "vacuity-lint")
+VACUITY_TABLE_NAME = ".".join(VACUITY_TABLE)
+
+
+@dataclasses.dataclass(frozen=True)
+class VacuityConfig:
+    paths: tuple[str, ...]
+    exclude: tuple[str, ...] = (
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+    )
+    accept: tuple[str, ...] = ()
+
+
+_VACUITY_KNOWN_KEYS = {"paths", "exclude", "accept"}
+
+
+def load_vacuity_config(repo_root: Path, config_path: Path | None = None) -> VacuityConfig:
+    source = config_path if config_path is not None else Path(repo_root) / "pyproject.toml"
+    try:
+        with open(source, "rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        raise ConfigError(
+            f"no config: {source} does not exist (looked for [{VACUITY_TABLE_NAME}] "
+            f"relative to repo root {repo_root})"
+        ) from None
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{source} is not valid TOML: {e}") from None
+
+    table = data
+    for key in VACUITY_TABLE:
+        table = table.get(key)
+        if table is None:
+            raise ConfigError(
+                f"{source} has no [{VACUITY_TABLE_NAME}] table — the guard refuses to "
+                f"guess which trees hold check code. Add the table (see README)."
+            )
+
+    unknown = set(table) - _VACUITY_KNOWN_KEYS
+    if unknown:
+        raise ConfigError(
+            f"[{VACUITY_TABLE_NAME}] has unknown key(s): {', '.join(sorted(unknown))} — "
+            f"a silently ignored setting is a hollow config; fix or remove them."
+        )
+
+    def strings(key, default=()):
+        value = table.get(key, list(default))
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ConfigError(f"[{VACUITY_TABLE_NAME}] {key} must be a list of strings")
+        return tuple(value)
+
+    cfg = VacuityConfig(
+        paths=strings("paths"),
+        exclude=strings("exclude", VacuityConfig.exclude),
+        accept=strings("accept"),
+    )
+    if not cfg.paths:
+        raise ConfigError(
+            f"[{VACUITY_TABLE_NAME}]: paths must be non-empty — a lint that reads no "
+            f"source examines nothing, which is the exact defect it exists to catch."
+        )
+    return cfg

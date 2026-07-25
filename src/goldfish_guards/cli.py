@@ -14,6 +14,7 @@ commands:
   fold-completeness   A finding is FOLDED only when every target it names shows a diff.
   fold-scaffold       Print a copy-paste .fold.md skeleton (rules inline).
   secret-scan         Standing secret-scanner: live-value, placement, token-shape.
+  vacuity-lint        A check that reports CLEAN must be able to report DIRTY.
 
 options:
   -h, --help          show this message
@@ -45,6 +46,10 @@ def main(argv=None):
         from goldfish_guards import secret_scan
 
         return secret_scan.main(rest)
+    if cmd == "vacuity-lint":
+        from goldfish_guards import vacuity_lint
+
+        return vacuity_lint.main(rest)
     print(f"unknown command: {cmd}\n\n{USAGE}", file=sys.stderr)
     return 2
 
