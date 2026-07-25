@@ -27,10 +27,25 @@ a fingerprint that can be `accept`-listed after triage — suppression is visibl
 never silent. Scope limits live in the module docstring; read them before crediting
 it with more.
 
+**Guard 3 — `vacuity-lint`:** *a check that reports CLEAN must first be shown
+capable of reporting DIRTY.* Born from three specimens in one repo in one night: an
+all-clear branch reachable with **zero items examined** — `all()` over an empty
+collection, `0 == len(empty)`, a discovery bug returning `[]` that makes every
+assertion below it pass vacuously. For each all-clear verdict the lint walks back to
+the **corpus** the verdict rests on and asks whether anything proves that corpus
+non-empty first. It reads the real repairs people actually write (`assert x`,
+`if not x: raise`, the inline `x and all(...)`, `assert any(… for i in x)`,
+`if len(x) < 3: continue`, a size pinned to a literal or a named constant), because
+a guard that fires at correct code is noise nobody keeps running. It is a **flag,
+never a gate**, and it applies its own law to itself: a corpus that resolves to zero
+files is a **REFUSAL (exit 3)**, never a green tick. Scope limits — Python only,
+intraprocedural, measured precision — live in the module docstring; read them before
+crediting it with more.
+
 ## Install (pinned)
 
 ```bash
-pip install "goldfish-guards @ git+https://github.com/pbarbiero1/goldfish-guards@v0.2.3"
+pip install "goldfish-guards @ git+https://github.com/pbarbiero1/goldfish-guards@v0.3.0"
 ```
 
 Pin a tag, record the tag's commit SHA next to the pin. Tags can move; SHAs cannot.
@@ -67,6 +82,16 @@ served_dirs  = ["files"]        # dirs a server exposes; no secret-shaped file m
 #           accept (fingerprints of triaged findings)
 ```
 
+For `vacuity-lint`, the table is `[tool.goldfish-guards.vacuity-lint]` — `paths` is
+REQUIRED and names the trees that hold check code (the guard refuses to guess, and
+refuses again at runtime if they resolve to nothing):
+
+```toml
+[tool.goldfish-guards.vacuity-lint]
+paths = ["src", "tests"]        # REQUIRED — where check/test code lives
+# optional: exclude (dir names to prune), accept (fingerprints of triaged findings)
+```
+
 ## Run
 
 ```bash
@@ -77,10 +102,14 @@ goldfish-guards fold-completeness --ledger one.fold.md # one ledger
 goldfish-guards secret-scan                            # full sweep: raw tree + git history
 goldfish-guards secret-scan --staged                   # pre-commit mode: staged content only
 goldfish-guards secret-scan --config guards.toml       # non-Python consumer
+
+goldfish-guards vacuity-lint                           # lint the configured check trees
+goldfish-guards vacuity-lint --config guards.toml      # non-Python consumer
 ```
 
-Exit 0 = every fold complete. Exit 1 = incomplete fold or config refusal, reasons on
-stderr.
+Exit 0 = every fold complete / nothing to flag. Exit 1 = a finding, or a config
+refusal, reasons on stderr. Exit 3 (`vacuity-lint` only) = REFUSAL: the configured
+paths resolved to zero parseable files, so there was nothing to be clean about.
 
 Works the same in CI (needs `fetch-depth: 0` — the guard takes a merge-base) and in a
 local pre-push script. Both are just callers.
@@ -96,3 +125,8 @@ three controls against the real corpus — ① clean repo → silent, ② a plan
 a real key value in a throwaway `*.log` → FIRES (the load-bearing one), ③ the key in
 its home file → silent, the same value elsewhere → fires. Convergent
 self-verification doesn't count.
+
+Same law again for `vacuity-lint`, with the same non-author rule: ① a hollow corpus
+(no checks in it) → silent, ② a real vacuous all-clear → FIRES, ③ the one-line repair
+→ silent again. The third leg is the one that matters most here: a lint that keeps
+firing after the correct fix teaches people to ignore it.
