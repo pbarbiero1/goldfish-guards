@@ -103,6 +103,20 @@ SECRET_TABLE_NAME = ".".join(SECRET_TABLE)
 @dataclasses.dataclass(frozen=True)
 class SecretScanConfig:
     secret_files: tuple[str, ...]
+    # --- ticket #119: the watched set needs a truth source that is NOT this config ---
+    # `secret_files` says where secrets are SUPPOSED to live. Nothing in it can tell
+    # you whether those are the files the running system actually reads its keys
+    # from — config and scanner share one source of truth, so they agree with each
+    # other while both being wrong about the world. These three declare the expected
+    # shape so silent drift becomes a REFUSAL instead of a quieter denominator:
+    #   manifest              — path to a read-set the CONSUMER emits (the real
+    #                           independent truth; disagreement either way refuses)
+    #   expected_secret_files — the exact home set, for a glob that could shrink
+    #   expected_value_count  — the exact value count, for drift below file level
+    # All optional: a consumer that wires none still runs, but its verdict says so.
+    manifest: str = ""
+    expected_secret_files: tuple[str, ...] = ()
+    expected_value_count: int | None = None
     served_dirs: tuple[str, ...] = ()
     secret_file_patterns: tuple[str, ...] = (
         "*_key",
@@ -136,6 +150,9 @@ class SecretScanConfig:
 
 _SECRET_KNOWN_KEYS = {
     "secret_files",
+    "manifest",
+    "expected_secret_files",
+    "expected_value_count",
     "served_dirs",
     "secret_file_patterns",
     "exclude",
@@ -188,8 +205,25 @@ def load_secret_scan_config(repo_root: Path, config_path: Path | None = None) ->
     if not isinstance(scan_history, bool):
         raise ConfigError(f"[{SECRET_TABLE_NAME}] scan_history must be true or false")
 
+    manifest = table.get("manifest", SecretScanConfig.manifest)
+    if not isinstance(manifest, str):
+        raise ConfigError(f"[{SECRET_TABLE_NAME}] manifest must be a path string")
+    expected_count = table.get("expected_value_count")
+    if expected_count is not None and (
+        not isinstance(expected_count, int) or isinstance(expected_count, bool) or expected_count < 1
+    ):
+        # < 1 is refused at load: an expectation of zero watched values would
+        # ENSHRINE the very defect ticket #115 exists to close.
+        raise ConfigError(
+            f"[{SECRET_TABLE_NAME}] expected_value_count must be an integer ≥ 1 — "
+            f"expecting zero watched values would make the vacuous scan the contract."
+        )
+
     cfg = SecretScanConfig(
         secret_files=strings("secret_files"),
+        manifest=manifest,
+        expected_secret_files=strings("expected_secret_files"),
+        expected_value_count=expected_count,
         served_dirs=strings("served_dirs"),
         secret_file_patterns=strings("secret_file_patterns", SecretScanConfig.secret_file_patterns),
         exclude=strings("exclude", SecretScanConfig.exclude),
