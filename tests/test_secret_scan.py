@@ -332,13 +332,19 @@ def test_accept_fingerprint_suppresses_finding(tmp_path):
 
 
 # ---------------------------------------------------------------------------------
-# Hygiene: a secret file too short to search safely is warned about, not searched
+# Hygiene: a secret file too short to search safely REFUSES (was: warn + green tick)
+#
+# CHANGED 2026-07-25 by tickets #115/#119. This test previously asserted exit 0 with
+# a "short" warning — it encoded the defect. A configured secret home the scanner
+# cannot search is a secret nobody is watching, and the run must not tick green over
+# it. The full law and its controls live in tests/test_secret_scan_watchset.py.
 # ---------------------------------------------------------------------------------
 
 
-def test_short_secret_value_warned_and_skipped(tmp_path):
+def test_short_secret_value_refuses_rather_than_ticking_green(tmp_path):
     repo = make_repo(tmp_path)
     (repo / ".room_key").write_text("abc\n")
     code, out = run_scan(repo)
-    assert code == 0, out
+    assert code == 3, out
     assert "short" in out.lower()
+    assert "✅" not in out

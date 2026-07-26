@@ -21,6 +21,32 @@ Three detectors, ranked by signal:
 Modes: full sweep (default: raw tree walk + git history) and --staged (the
 pre-commit chokepoint: staged content only, fast, no history walk).
 
+THE WATCH SET MUST PROVE ITSELF FIRST (tickets #115 + #119, both ratified
+2026-07-25). Everything above is downstream of one list — the values read from
+the configured secret files. If that list is empty, or is a list of the WRONG
+values, every detector below fires perfectly over nothing and the tool prints a
+confident green tick. So, before any scanning happens:
+
+  * ZERO WATCHED VALUES ⇒ REFUSE (exit 3), never a green tick (#115). Likewise a
+    pattern that resolves to no file, and a resolved file that yields no watchable
+    value — a configured home the scanner is blind to is a secret nobody is
+    guarding, while the denominator still reads healthy.
+  * THE DENOMINATOR IS PUBLISHED, from a single derivation — the banner and the
+    verdict render one string, so they cannot disagree.
+  * THE WATCHED SET IS ASSERTED AGAINST A SOURCE THAT IS NOT THIS CONFIG (#119),
+    when the consumer wires one: `manifest` (a read-set the consumer itself emits
+    — the only real independent truth), `expected_secret_files`, or
+    `expected_value_count`. Disagreement in EITHER direction refuses: a path the
+    consumer reads but nobody watches is an invisible key, and a path watched but
+    never read is a stale copy standing in for a key that moved. A consumer that
+    wires none of the three still runs — but its verdict says CONFIG ONLY out
+    loud, because a scan that cannot detect its own drift must not read like one
+    that can.
+
+REFUSAL OUTRANKS FINDINGS. If the watch set is broken and a leak is also present,
+the exit is 3, not 1: a partial finding list over an untrustworthy corpus is an
+honest-looking report that misleads, which is the harm both tickets describe.
+
 Redaction is load-bearing: this tool NEVER prints a secret value. Live-value
 findings name the home file and the leak location only; shape findings are masked
 to a 4-char prefix. Every finding carries a sha256:16-hex fingerprint the keeper
@@ -52,6 +78,13 @@ from goldfish_guards.config import ConfigError, load_secret_scan_config
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
 SNIFF_BYTES = 8192
+
+# Guard C set this convention and it is shared deliberately: "the instrument could
+# not have found anything" and "the instrument found nothing" demand OPPOSITE
+# repairs, so they never share an exit code. Pinned across both guards by
+# tests/test_secret_scan_watchset.py::test_115_refuse_exit_code_agrees_with_vacuity_lint
+# — a drift here would silently mis-route one of them in every consumer script.
+REFUSE = 3
 
 # (name, compiled regex, needs letter+digit filter)
 SHAPES = (
@@ -93,51 +126,173 @@ def _plausible_value(text):
     return any(c.isdigit() for c in text) and any(c.isalpha() for c in text)
 
 
-def _load_watched_values(root, cfg, warnings):
-    """value -> sorted home relpaths. Derived from disk at scan time, never hardcoded."""
+def _load_watched_values(root, cfg, refusals):
+    """value -> sorted home relpaths. Derived from disk at scan time, never hardcoded.
+
+    Every one of these paths used to append to `warnings` and carry on to a green
+    tick (#115). They are REFUSALS now, and the distinction they all share is the
+    point: a configured secret home that yields no watchable value is a secret this
+    scanner is blind to, while the denominator it prints still looks healthy.
+    """
     import json
 
     values = {}
     homes = set()
     for pattern in cfg.secret_files:
         matches = sorted(root.glob(pattern))
-        if not matches:
-            warnings.append(f"secret file not found on disk: {pattern} (config drift?)")
+        files = [p for p in matches if p.is_file()]
+        if not files:
+            why = "matched only a directory" if matches else "not found on disk"
+            refusals.append(
+                f"secret_files pattern {pattern!r}: {why} — config drift? "
+                f"A pattern that resolves to no file watches nothing."
+            )
             continue
-        for path in matches:
-            if not path.is_file():
-                continue
+        for path in files:
             rel = path.relative_to(root).as_posix()
             homes.add(rel)
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError as e:
-                warnings.append(f"cannot read secret file {rel}: {e}")
+                refusals.append(
+                    f"secret file {rel}: unreadable ({e}) — its value cannot be watched"
+                )
                 continue
             if path.suffix == ".json":
                 try:
                     found = _json_secret_leaves(json.loads(text), cfg.json_value_keys)
                 except ValueError as e:
-                    warnings.append(f"secret file {rel} is not valid JSON: {e}")
+                    refusals.append(
+                        f"secret file {rel}: not valid JSON ({e}) — nothing watchable in it"
+                    )
                     continue
                 qualifying = [v for v in found if len(v) >= cfg.min_value_length]
                 if not qualifying:
-                    warnings.append(
-                        f"secret file {rel}: no string ≥ {cfg.min_value_length} chars "
-                        f"under a secret-named field — nothing to watch there"
+                    refusals.append(
+                        f"secret file {rel}: no string ≥ {cfg.min_value_length} chars under a "
+                        f"secret-named field — configured as a secret home, but UNWATCHED"
                     )
+                    continue
                 for v in qualifying:
                     values.setdefault(v, set()).add(rel)
             else:
                 v = text.strip()
                 if len(v) < cfg.min_value_length:
-                    warnings.append(
-                        f"secret file {rel}: value too short to search safely "
-                        f"(<{cfg.min_value_length} chars) — skipped"
+                    refusals.append(
+                        f"secret file {rel}: value shorter than {cfg.min_value_length} chars — "
+                        f"too short to search safely, so this home goes UNWATCHED"
                     )
                     continue
                 values.setdefault(v, set()).add(rel)
-    return {v: sorted(h) for v, h in values.items()}, homes
+    return {v: sorted(h) for v, h in values.items()}, sorted(homes)
+
+
+def _read_manifest(root, rel):
+    """The CONSUMER's own read-set — the one truth source that is not this config.
+
+    Newline-delimited paths (`#` comments and blanks ignored), or JSON: a list of
+    paths, or an object carrying a `secret_files` list. Returns (paths, error).
+    """
+    import json
+
+    path = root / rel
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return None, (
+            f"manifest {rel}: unreadable ({e}) — a configured manifest that is not "
+            f"there leaves an UNVERIFIED scan wearing a verified uniform"
+        )
+    if path.suffix == ".json":
+        try:
+            data = json.loads(text)
+        except ValueError as e:
+            return None, f"manifest {rel}: not valid JSON ({e})"
+        if isinstance(data, dict):
+            data = data.get("secret_files")
+        if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+            return None, (
+                f"manifest {rel}: expected a list of paths, or an object with a "
+                f"`secret_files` list of paths"
+            )
+        entries = list(data)
+    else:
+        entries = text.splitlines()
+    entries = [e.strip() for e in entries]
+    entries = [e for e in entries if e and not e.startswith("#")]
+    if not entries:
+        return None, (
+            f"manifest {rel}: empty — set equality against an empty manifest passes "
+            f"trivially, which is the exact vacuity this package exists to catch"
+        )
+    return sorted(set(entries)), None
+
+
+def _verify_watch_set(root, cfg, homes, n_values, refusals):
+    """Ticket #119. Assert the watched set against every non-config source the
+    consumer wired, in BOTH directions. Returns the provenance line for the verdict.
+
+    They compose rather than override: a manifest proves the SUBJECT is right, an
+    expected count catches drift BELOW file level (a room whose key left rooms.json
+    while its file stayed put). Neither one subsumes the other.
+    """
+    verified = []
+    if cfg.manifest:
+        declared, err = _read_manifest(root, cfg.manifest)
+        if err:
+            refusals.append(err)
+        else:
+            watched = set(homes)
+            unwatched = sorted(set(declared) - watched)
+            unread = sorted(watched - set(declared))
+            if unwatched:
+                refusals.append(
+                    f"manifest {cfg.manifest} names {len(unwatched)} path(s) the config does "
+                    f"NOT watch: {', '.join(unwatched)} — the consumer reads these and this "
+                    f"scan is blind to them"
+                )
+            if unread:
+                refusals.append(
+                    f"config watches {len(unread)} path(s) the manifest {cfg.manifest} does "
+                    f"NOT list: {', '.join(unread)} — a stale copy standing in for a key "
+                    f"that moved would look exactly like this"
+                )
+            if not unwatched and not unread:
+                verified.append(f"manifest {cfg.manifest} ({len(declared)} path(s))")
+    if cfg.expected_secret_files:
+        expected = set(cfg.expected_secret_files)
+        watched = set(homes)
+        missing = sorted(expected - watched)
+        extra = sorted(watched - expected)
+        if missing:
+            refusals.append(
+                f"expected_secret_files: {len(missing)} declared home(s) not resolved: "
+                f"{', '.join(missing)} — a glob that still matches something, just less "
+                f"than it used to, shrinks the denominator silently"
+            )
+        if extra:
+            refusals.append(
+                f"expected_secret_files: {len(extra)} resolved home(s) not declared: "
+                f"{', '.join(extra)} — declare it deliberately or fix the pattern"
+            )
+        if not missing and not extra:
+            verified.append(f"expected_secret_files ({len(expected)} path(s))")
+    if cfg.expected_value_count is not None:
+        if cfg.expected_value_count != n_values:
+            refusals.append(
+                f"expected_value_count = {cfg.expected_value_count} but {n_values} value(s) "
+                f"watched — the watched set changed shape without anyone declaring it"
+            )
+        else:
+            verified.append(f"expected_value_count={n_values}")
+    if verified:
+        return "VERIFIED against " + " + ".join(verified)
+    return (
+        "CONFIG ONLY — the watched set was never compared to anything outside this "
+        "config, so this run cannot detect its own drift (ticket #119). Wire "
+        "`manifest` (best: a read-set the consumer emits), or `expected_secret_files` "
+        "/ `expected_value_count`."
+    )
 
 
 def _json_secret_leaves(node, value_keys, under_secret=False):
@@ -383,10 +538,42 @@ def main(argv=None):
         return 1
 
     warnings: list[str] = []
-    values, homes = _load_watched_values(root, cfg, warnings)
+    refusals: list[str] = []
+    values, homes = _load_watched_values(root, cfg, refusals)
+    if not values:
+        refusals.append(
+            "0 value(s) watched — no configured secret file yielded a value, so this "
+            "scan could not have reported DIRTY no matter what is leaked. A green tick "
+            "here IS the vacuous all-clear (ticket #115)."
+        )
+    provenance = _verify_watch_set(root, cfg, homes, len(values), refusals)
+
+    # The denominator, derived ONCE and rendered from ONE place — the banner and the
+    # verdict below print this same string, so they are incapable of disagreeing.
+    watched = f"{len(values)} value(s) watched from {len(homes)} file(s)"
     findings: list[Finding] = []
     mode = "staged" if args.staged else "full"
-    print(f"secret-scan guard · root={root} · mode={mode} · {len(values)} value(s) watched")
+    print(f"secret-scan guard · root={root} · mode={mode} · {watched}")
+    print(f"  ⟐ watched-set provenance: {provenance}")
+
+    # BEFORE any scanning: an untrustworthy watch set makes every downstream number
+    # meaningless, and refusing outranks reporting a partial finding list over it.
+    if refusals:
+        print(
+            f"\n⛔ REFUSE: the watch set cannot support a verdict "
+            f"({len(refusals)} problem(s))\n",
+            file=sys.stderr,
+        )
+        for r in refusals:
+            print(f"  • {r}", file=sys.stderr)
+        print(
+            "\n  This is neither 'clean' nor 'findings' — it is 'the instrument was not"
+            "\n  capable of finding anything', and that demands the opposite repair:"
+            "\n  fix the config (or the drift it just caught), then run again."
+            "\n  Tickets #115 / #119.",
+            file=sys.stderr,
+        )
+        return REFUSE
 
     commits = 0
     try:
@@ -422,10 +609,7 @@ def main(argv=None):
         return 1
 
     swept = f", {commits} commit(s) swept" if commits else ""
-    print(
-        f"\n✅ SECRET-SCAN: clean — {len(values)} value(s) watched, "
-        f"{scanned} file(s) scanned{swept}."
-    )
+    print(f"\n✅ SECRET-SCAN: clean — {watched}, {scanned} file(s) scanned{swept}.")
     return 0
 
 

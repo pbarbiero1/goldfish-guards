@@ -24,8 +24,13 @@ The walk is deliberately gitignore-blind — the incident file was ignored, and 
 gitignore-aware grep reported false-clean over exactly the files that leaked.
 Output is redacted (the tool never prints a secret value) and every finding carries
 a fingerprint that can be `accept`-listed after triage — suppression is visible,
-never silent. Scope limits live in the module docstring; read them before crediting
-it with more.
+never silent. Since v0.4.0 it also applies guard 3's law to its own watch set: it
+can only report CLEAN if it was CAPABLE of reporting DIRTY, so **zero watched
+values — or any configured secret home it cannot read a value from — is a REFUSAL
+(exit 3), never a green tick**, every clean verdict publishes its denominator, and
+the watched set can be asserted against a manifest the *consumer* emits rather than
+against the scanner's own config. Scope limits live in the module docstring; read
+them before crediting it with more.
 
 **Guard 3 — `vacuity-lint`:** *a check that reports CLEAN must first be shown
 capable of reporting DIRTY.* Born from three specimens in one repo in one night: an
@@ -45,7 +50,7 @@ crediting it with more.
 ## Install (pinned)
 
 ```bash
-pip install "goldfish-guards @ git+https://github.com/pbarbiero1/goldfish-guards@v0.3.0"
+pip install "goldfish-guards @ git+https://github.com/pbarbiero1/goldfish-guards@v0.4.0"
 ```
 
 Pin a tag, record the tag's commit SHA next to the pin. Tags can move; SHAs cannot.
@@ -80,7 +85,30 @@ served_dirs  = ["files"]        # dirs a server exposes; no secret-shaped file m
 #           json_value_keys (which JSON fields hold secrets; default key/token/
 #           secret/password/api_key), scan_history (default true),
 #           accept (fingerprints of triaged findings)
+
+# --- WATCH-SET VERIFICATION (tickets #115/#119) — optional, and worth wiring ---
+# `secret_files` says where secrets are SUPPOSED to live. Nothing in it can tell you
+# whether those are the files your running system actually reads its keys from:
+# config and scanner share one source of truth, so they agree with each other while
+# both being wrong about the world. That failure wears the uniform of a successful
+# scan — N real values, an honest denominator, every detector firing — with a live
+# credential sitting in a log. Declare the expected shape and drift becomes a
+# REFUSAL instead of a quieter number nobody reads:
+manifest = "state/.secret_manifest"   # BEST: a read-set your CONSUMER emits (one
+                                      # path per line, or JSON). Disagreement in
+                                      # EITHER direction refuses — a path it reads
+                                      # but nobody watches is an invisible key; a
+                                      # path watched but never read is a stale copy
+                                      # standing in for a key that moved.
+expected_secret_files = [".room_key"] # the exact home set — catches a glob that
+                                      # still matches something, just less than it did
+expected_value_count  = 7             # the exact value count — catches drift BELOW
+                                      # file level (a room whose key left rooms.json)
 ```
+
+Wiring none of the three is allowed — the scan still runs — but the verdict then
+says `CONFIG ONLY` out loud, because a scan that cannot detect its own drift must
+not read like one that can.
 
 For `vacuity-lint`, the table is `[tool.goldfish-guards.vacuity-lint]` — `paths` is
 REQUIRED and names the trees that hold check code (the guard refuses to guess, and
@@ -108,8 +136,21 @@ goldfish-guards vacuity-lint --config guards.toml      # non-Python consumer
 ```
 
 Exit 0 = every fold complete / nothing to flag. Exit 1 = a finding, or a config
-refusal, reasons on stderr. Exit 3 (`vacuity-lint` only) = REFUSAL: the configured
-paths resolved to zero parseable files, so there was nothing to be clean about.
+refusal, reasons on stderr. **Exit 3 = REFUSAL: the instrument could not have found
+anything, which demands the opposite repair from "found nothing" and therefore never
+shares its exit code.** `vacuity-lint` refuses when the configured paths resolve to
+zero parseable files; `secret-scan` refuses when its watch set cannot support a
+verdict — zero values watched, a configured secret home it cannot read a value from,
+or (when wired) a watched set that disagrees with the consumer's own manifest.
+For `secret-scan` a refusal OUTRANKS findings: a partial finding list over an
+untrustworthy corpus is an honest-looking report that misleads.
+
+⚠ **Upgrading a `secret-scan` consumer to v0.4.0 is a behaviour change.** A config
+whose secret files went missing, or that lists a home yielding no watchable value,
+used to print `✅ clean` and exit 0; it now exits 3. That is the bug being fixed —
+but check your config against a real run before wiring the new version into a
+blocking hook, and branch on 3 separately in any script that treats non-zero as
+"findings".
 
 Works the same in CI (needs `fetch-depth: 0` — the guard takes a merge-base) and in a
 local pre-push script. Both are just callers.
@@ -124,7 +165,10 @@ Same law for `secret-scan`, with a stronger builder rule: a **non-author** runs 
 three controls against the real corpus — ① clean repo → silent, ② a planted copy of
 a real key value in a throwaway `*.log` → FIRES (the load-bearing one), ③ the key in
 its home file → silent, the same value elsewhere → fires. Convergent
-self-verification doesn't count.
+self-verification doesn't count. Since v0.4.0 add a fourth: ④ with that planted leak
+still in place, point `secret_files` at a filename that does not exist → **REFUSES
+(exit 3)**, does not tick green. Control ④ is the one that must be run with the leak
+present; a refusal proven over a repo that had nothing to find proves nothing.
 
 Same law again for `vacuity-lint`, with the same non-author rule: ① a hollow corpus
 (no checks in it) → silent, ② a real vacuous all-clear → FIRES, ③ the one-line repair

@@ -2,7 +2,7 @@ import textwrap
 
 import pytest
 
-from goldfish_guards.config import ConfigError, load_fold_config
+from goldfish_guards.config import ConfigError, load_fold_config, load_secret_scan_config
 
 GOOD = textwrap.dedent(
     """
@@ -89,3 +89,73 @@ def test_unknown_keys_are_a_hard_loud_failure(tmp_path):
     with pytest.raises(ConfigError) as e:
         load_fold_config(tmp_path)
     assert "ledger_dirr" in str(e.value)
+
+
+# ---------------------------------------------------------------------------------
+# secret-scan — the #119 watch-set declarations (manifest / expected_*)
+#
+# These three keys exist so the watched set can be asserted against something that
+# is NOT this config. A typo in one of them must not degrade to "unwired" silently,
+# which is why the unknown-key refusal below is the load-bearing test of the set:
+# `manifets = "..."` that merely got ignored would leave a verdict reading VERIFIED
+# in the author's head and CONFIG ONLY in reality.
+# ---------------------------------------------------------------------------------
+
+SECRET_GOOD = textwrap.dedent(
+    """
+    [tool.goldfish-guards.secret-scan]
+    secret_files = [".room_key"]
+    """
+)
+
+
+def test_secret_scan_watchset_keys_default_to_unwired(tmp_path):
+    write(tmp_path, "pyproject.toml", SECRET_GOOD)
+    cfg = load_secret_scan_config(tmp_path)
+    assert cfg.manifest == ""
+    assert cfg.expected_secret_files == ()
+    assert cfg.expected_value_count is None
+
+
+def test_secret_scan_watchset_keys_load(tmp_path):
+    write(
+        tmp_path,
+        "pyproject.toml",
+        SECRET_GOOD
+        + 'manifest = "state/.secret_manifest"\n'
+        + 'expected_secret_files = [".room_key"]\n'
+        + "expected_value_count = 3\n",
+    )
+    cfg = load_secret_scan_config(tmp_path)
+    assert cfg.manifest == "state/.secret_manifest"
+    assert cfg.expected_secret_files == (".room_key",)
+    assert cfg.expected_value_count == 3
+
+
+def test_secret_scan_misspelled_watchset_key_refuses(tmp_path):
+    write(tmp_path, "pyproject.toml", SECRET_GOOD + 'manifets = "state/.secret_manifest"\n')
+    with pytest.raises(ConfigError) as e:
+        load_secret_scan_config(tmp_path)
+    assert "manifets" in str(e.value)
+
+
+def test_secret_scan_expected_value_count_of_zero_refuses(tmp_path):
+    """Expecting zero watched values would make ticket #115's defect the contract."""
+    write(tmp_path, "pyproject.toml", SECRET_GOOD + "expected_value_count = 0\n")
+    with pytest.raises(ConfigError) as e:
+        load_secret_scan_config(tmp_path)
+    assert "expected_value_count" in str(e.value)
+
+
+@pytest.mark.parametrize("bad", ["true", '"3"', "1.5"])
+def test_secret_scan_expected_value_count_must_be_an_integer(tmp_path, bad):
+    write(tmp_path, "pyproject.toml", SECRET_GOOD + f"expected_value_count = {bad}\n")
+    with pytest.raises(ConfigError):
+        load_secret_scan_config(tmp_path)
+
+
+def test_secret_scan_manifest_must_be_a_string(tmp_path):
+    write(tmp_path, "pyproject.toml", SECRET_GOOD + 'manifest = ["a", "b"]\n')
+    with pytest.raises(ConfigError) as e:
+        load_secret_scan_config(tmp_path)
+    assert "manifest" in str(e.value)
