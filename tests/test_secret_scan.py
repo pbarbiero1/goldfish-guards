@@ -348,3 +348,61 @@ def test_short_secret_value_refuses_rather_than_ticking_green(tmp_path):
     assert code == 3, out
     assert "short" in out.lower()
     assert "✅" not in out
+
+
+# ── #283: a staged BINARY must not crash the guard (Courser, 2026-08-09) ─────
+# UnicodeDecodeError is a ValueError; the unreadable-branch caught RuntimeError
+# only, so one seat's staged PNG killed EVERY seat's commits with a traceback
+# that named --no-verify. These controls pin the intended behaviour: skip the
+# binary with a warning, keep scanning, still catch real secrets alongside it.
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4  # real magic byte + undecodable tail
+
+
+def test_283_staged_binary_does_not_crash(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "shot.png").write_bytes(PNG_BYTES)
+    git(repo, "add", "shot.png")
+    code, out = run_scan(repo, "--staged")
+    # No traceback, no crash: clean exit with the binary skipped-with-warning.
+    assert "Traceback" not in out
+    assert code == 0, out
+
+
+def test_283_staged_binary_does_not_mask_a_real_secret(tmp_path):
+    # The skip must not swallow the scan: a genuine secret staged NEXT TO the
+    # binary still blocks. This is the arm that dies if the fix over-catches.
+    repo = make_repo(tmp_path)
+    (repo / "shot.png").write_bytes(PNG_BYTES)
+    (repo / "leak.md").write_text(f"key: {ROOM_KEY}\n")
+    git(repo, "add", "shot.png", "leak.md")
+    code, out = run_scan(repo, "--staged")
+    assert code == 1
+    assert "leak.md" in out
+    assert ROOM_KEY not in out
+
+
+def test_283_staged_binary_is_skipped_and_says_so(tmp_path):
+    # Leaftosser's hollow pass, M4: with the NUL-sniff deleted, a staged binary
+    # is replace-decoded and FED TO THE SHAPE REGEXES — and the first two #283
+    # controls stay green. The skip-with-warning IS the contract; assert it.
+    repo = make_repo(tmp_path)
+    (repo / "shot.png").write_bytes(PNG_BYTES)
+    git(repo, "add", "shot.png")
+    code, out = run_scan(repo, "--staged")
+    assert code == 0, out
+    assert "binary" in out and "skipped" in out
+
+
+def test_283_history_scan_survives_non_utf8_blob(tmp_path):
+    # Thornbill's history half / Leaftosser's M6: a committed TEXT file with
+    # non-UTF8 bytes (latin-1, NO null byte — git does not classify it binary,
+    # so `git log -p` emits the raw bytes). With _git byte-safe the full scan
+    # completes; with the pre-#283 text=True _git it crashed the whole sweep.
+    repo = make_repo(tmp_path)
+    (repo / "legacy.txt").write_bytes("caf\xe9 r\xe9sum\xe9\n".encode("latin-1"))
+    git(repo, "add", "legacy.txt")
+    git(repo, "commit", "-m", "latin-1 text file")
+    code, out = run_scan(repo)  # full sweep includes history
+    assert "Traceback" not in out
+    assert code == 0, out

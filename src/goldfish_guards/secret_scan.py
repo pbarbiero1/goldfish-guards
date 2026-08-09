@@ -418,10 +418,31 @@ def _scan_placement(root, cfg, findings):
 
 
 def _git(root, *args):
-    proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    # BYTE-SAFE AT THE READ (#283, Thornbill's shape): text=True decoded INSIDE
+    # subprocess.run and raised UnicodeDecodeError (a ValueError) on any binary
+    # blob — which sailed past every `except RuntimeError` consumer and crashed
+    # the guard mid-pre-commit. Decode here, errors="replace", so no _git caller
+    # can ever see a decode crash; binary SKIPPING is the caller's job via
+    # _looks_binary (mirroring _read_text's NUL sniff), because scanning
+    # replace-mangled binary bytes would feed the shape regexes garbage.
+    proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args[:2])}… failed: {proc.stderr.strip()}")
+        err = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"git {' '.join(args[:2])}… failed: {err}")
+    return proc.stdout.decode("utf-8", errors="replace")
+
+
+def _git_bytes(root, *args):
+    """Raw-bytes variant for callers that must sniff binaryness before decoding."""
+    proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True)
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"git {' '.join(args[:2])}… failed: {err}")
     return proc.stdout
+
+
+def _looks_binary(data):
+    return b"\0" in data[:SNIFF_BYTES]
 
 
 def _scan_history(root, values, tree_findings, findings, warnings):
@@ -429,7 +450,10 @@ def _scan_history(root, values, tree_findings, findings, warnings):
     path) suppress their history echo — the tree already told that story."""
     try:
         out = _git(root, "log", "--all", "--pretty=format:%x01%H", "-p", "--unified=0")
-    except RuntimeError as e:
+    except (RuntimeError, UnicodeDecodeError) as e:
+        # Same class as the staged-binary crash (#283): a non-UTF8 blob in any
+        # commit's diff raises UnicodeDecodeError (a ValueError) — degrade to
+        # warning as intended.
         warnings.append(f"history scan unavailable: {e}")
         return 0
     already = {f.fingerprint for f in tree_findings}
@@ -496,8 +520,22 @@ def _scan_staged(root, cfg, values, homes, findings, warnings):
                 )
             )
         try:
-            text = _git(root, "show", f":{rel}")
-        except RuntimeError as e:
+            blob = _git_bytes(root, "show", f":{rel}")
+            if _looks_binary(blob):
+                # binary staged file: skip content scan with a warning — the
+                # placement detector above already saw the FILENAME. Mirrors
+                # _read_text's working-tree NUL sniff (#283).
+                warnings.append(f"staged {rel}: binary — content scan skipped")
+                continue
+            text = blob.decode("utf-8", errors="replace")
+        except (RuntimeError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError is a ValueError, NOT a RuntimeError — a staged
+            # BINARY (magic byte 0x89) used to sail past this handler and crash
+            # the whole guard with a traceback whose pre-commit footer named
+            # --no-verify: a secret scanner training its users to bypass it, and
+            # every OTHER seat's commit died on one seat's staged image (#283,
+            # Courser 2026-08-09). Skip-with-warning was always this branch's
+            # intent; it caught the wrong type.
             warnings.append(f"staged {rel}: unreadable ({e})")
             continue
         scanned += 1
@@ -584,7 +622,10 @@ def main(argv=None):
             _scan_placement(root, cfg, findings)
             if cfg.scan_history:
                 commits = _scan_history(root, values, list(findings), findings, warnings)
-    except RuntimeError as e:
+    except (RuntimeError, UnicodeDecodeError) as e:
+        # Top-level backstop (#283): any residual decode crash becomes a loud
+        # FAIL refusal instead of a traceback — a guard that crashes trains its
+        # users toward --no-verify.
         print(f"FAIL: {e}", file=sys.stderr)
         return 1
 
