@@ -117,6 +117,27 @@ class SecretScanConfig:
     manifest: str = ""
     expected_secret_files: tuple[str, ...] = ()
     expected_value_count: int | None = None
+    # ── #119: the DERIVED expectation ────────────────────────────────────────
+    #   expected_value_count_base       — how many values the FIXED homes hold
+    #   expected_value_count_per_entry  — "path#/json/pointer": +1 per entry there
+    #
+    # WHY (ticket #119, and the consumer's own config filed the complaint against
+    # itself): a LITERAL expected_value_count is coupled to a normal product action.
+    # The Roost's count is 5 fixed key files + ONE KEY PER ROOM, and creating a room
+    # is a first-class keeper action — so every new room fail-closed EVERY commit in
+    # that repo until someone hand-bumped the literal. It has already happened once
+    # (7 -> 8, 2026-08-06, when the keeper created a third room). That is a guard
+    # firing hardest at correct behaviour, i.e. the guard is on the wrong subject.
+    #
+    # ⚠ THE DESIGN POINT, because the obvious version of this is WORSE THAN THE BUG:
+    # the expectation is derived from the STRUCTURE (how many rooms exist), and is
+    # then compared against the VALUES ACTUALLY FOUND. Deriving it from the values
+    # instead would be circular — it would make the check unfalsifiable and silently
+    # drop the below-file-level drift the literal was catching (a room whose key
+    # LEFT rooms.json). With the structural derivation that case still refuses:
+    # entries stay 3, values fall to 2, expected != actual.
+    expected_value_count_base: int | None = None
+    expected_value_count_per_entry: tuple[str, ...] = ()
     served_dirs: tuple[str, ...] = ()
     secret_file_patterns: tuple[str, ...] = (
         "*_key",
@@ -153,6 +174,8 @@ _SECRET_KNOWN_KEYS = {
     "manifest",
     "expected_secret_files",
     "expected_value_count",
+    "expected_value_count_base",
+    "expected_value_count_per_entry",
     "served_dirs",
     "secret_file_patterns",
     "exclude",
@@ -219,11 +242,48 @@ def load_secret_scan_config(repo_root: Path, config_path: Path | None = None) ->
             f"expecting zero watched values would make the vacuous scan the contract."
         )
 
+    base = table.get("expected_value_count_base")
+    if base is not None and (
+        not isinstance(base, int) or isinstance(base, bool) or base < 1
+    ):
+        # Same floor as the literal, and for the same reason: a base of zero would
+        # let a config expect nothing from its FIXED homes, which is #115's defect
+        # wearing the derived form.
+        raise ConfigError(
+            f"[{SECRET_TABLE_NAME}] expected_value_count_base must be an integer ≥ 1 — "
+            f"expecting zero values from the fixed homes would make the vacuous scan "
+            f"the contract."
+        )
+    per_entry = strings("expected_value_count_per_entry")
+    if per_entry and base is None:
+        raise ConfigError(
+            f"[{SECRET_TABLE_NAME}] expected_value_count_per_entry needs "
+            f"expected_value_count_base — a per-entry term with no fixed term expects "
+            f"nothing from the fixed homes, so their drift would pass silently."
+        )
+    if base is not None and expected_count is not None:
+        # Refuse rather than pick. Two expectations that can disagree is exactly the
+        # config-agrees-with-itself failure this ticket is about.
+        raise ConfigError(
+            f"[{SECRET_TABLE_NAME}] set expected_value_count OR "
+            f"expected_value_count_base, never both — two expectations that can "
+            f"disagree is the drift you are trying to detect."
+        )
+    for spec in per_entry:
+        if "#/" not in spec:
+            raise ConfigError(
+                f"[{SECRET_TABLE_NAME}] expected_value_count_per_entry entry {spec!r} "
+                f"must be 'path#/json/pointer' — the pointer is what makes the count "
+                f"structural rather than a second guess at the value count."
+            )
+
     cfg = SecretScanConfig(
         secret_files=strings("secret_files"),
         manifest=manifest,
         expected_secret_files=strings("expected_secret_files"),
         expected_value_count=expected_count,
+        expected_value_count_base=base,
+        expected_value_count_per_entry=per_entry,
         served_dirs=strings("served_dirs"),
         secret_file_patterns=strings("secret_file_patterns", SecretScanConfig.secret_file_patterns),
         exclude=strings("exclude", SecretScanConfig.exclude),
