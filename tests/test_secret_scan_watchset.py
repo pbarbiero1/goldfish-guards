@@ -455,3 +455,126 @@ def test_119_manifest_and_expected_counts_compose(tmp_path):
     code, out = run_scan(repo)
     assert code == REFUSE, out
     assert "expected_value_count = 5 but 2 value(s) watched" in out
+
+
+# =================================================================================
+# #119 — the DERIVED expectation (expected_value_count_base + _per_entry)
+#
+# WHY THIS EXISTS: a LITERAL expected_value_count is coupled to a normal product
+# action. The Roost's count is fixed-homes + one key per room, and creating a room
+# is a first-class keeper action — so every new room fail-closed EVERY commit until
+# someone hand-bumped the literal (it happened: 7 -> 8, 2026-08-06, third room).
+# A guard that fires hardest at correct behaviour is on the wrong subject.
+#
+# THE TRAP THESE CONTROLS EXIST TO RULE OUT: the obvious repair — derive the count
+# from the values found — is WORSE than the bug. It compares the watched set to
+# itself, can never refuse, and silently drops the below-file drift the literal was
+# catching. So the expectation is derived from STRUCTURE (how many rooms exist) and
+# compared against VALUES FOUND. `test_..._still_catches_a_room_whose_key_vanished`
+# is the control that proves that distinction is real and not just a comment.
+# =================================================================================
+
+DERIVED_CONFIG = (
+    CONFIG_HEAD
+    + 'secret_files = ["state/.room_key", "state/rooms.json"]\n'
+    + "expected_value_count_base = 1\n"
+    + 'expected_value_count_per_entry = ["state/rooms.json#/rooms"]\n'
+)
+
+
+def _write_rooms(repo, rooms):
+    (repo / "state" / "rooms.json").write_text(json.dumps({"rooms": rooms}) + "\n")
+
+
+def test_derived_count_verifies_when_structure_and_values_agree(tmp_path):
+    """POSITIVE. base 1 (the .room_key file) + 1 room entry == 2 values watched."""
+    repo = make_repo(tmp_path, config=DERIVED_CONFIG, leak=False)
+    code, out = run_scan(repo)
+    assert code == 0, out
+    assert "derived expected_value_count=2" in out
+    assert "VERIFIED against" in out
+
+
+def test_derived_count_ABSORBS_a_new_room_without_a_hand_bump(tmp_path):
+    """THE POINT OF THE TICKET: creating a room is a normal keeper action and must
+    not fail-close the repo. With the literal this went red until someone edited
+    the config by hand."""
+    repo = make_repo(tmp_path, config=DERIVED_CONFIG, leak=False)
+    _write_rooms(
+        repo,
+        [{"id": "basil", "key": BASIL_KEY}, {"id": "newroom", "key": ADMIN_KEY}],
+    )
+    code, out = run_scan(repo)
+    assert code == 0, out
+    assert "derived expected_value_count=3" in out
+
+
+def test_derived_count_still_catches_a_room_whose_key_vanished(tmp_path):
+    """COVERAGE PRESERVED — the control that makes the design honest.
+
+    The literal caught drift BELOW file level: a room whose key left rooms.json.
+    A count derived from the VALUES would lose that (it would just expect fewer).
+    Derived from STRUCTURE it still refuses: entries stay 2, values fall to 2
+    (1 fixed + 1 room), expected is 1 + 2 = 3.
+    """
+    repo = make_repo(tmp_path, config=DERIVED_CONFIG, leak=False)
+    _write_rooms(repo, [{"id": "basil", "key": BASIL_KEY}, {"id": "keyless"}])
+    code, out = run_scan(repo)
+    assert code == REFUSE, out
+    assert "derived expected_value_count = 3" in out
+    assert "an entry exists whose secret is missing" in out
+
+
+def test_an_unresolvable_pointer_REFUSES_rather_than_counting_zero(tmp_path):
+    """A bad pointer must not contribute 0 — that would shrink the expectation to
+    the base and hide every per-entry secret disappearing at once."""
+    bad = DERIVED_CONFIG.replace("#/rooms", "#/nope")
+    repo = make_repo(tmp_path, config=bad, leak=False)
+    code, out = run_scan(repo)
+    assert code == REFUSE, out
+    assert "not found" in out
+    assert "cannot contribute zero" in out
+
+
+def test_a_missing_per_entry_file_REFUSES(tmp_path):
+    cfg = DERIVED_CONFIG.replace("state/rooms.json#/rooms", "state/gone.json#/rooms")
+    repo = make_repo(tmp_path, config=cfg, leak=False)
+    code, out = run_scan(repo)
+    assert code == REFUSE, out
+    assert "cannot contribute zero" in out
+
+
+def test_base_and_literal_together_are_REFUSED_at_config_load(tmp_path):
+    """Two expectations that can disagree is the drift you are trying to detect."""
+    cfg = DERIVED_CONFIG + "expected_value_count = 2\n"
+    repo = make_repo(tmp_path, config=cfg, leak=False)
+    code, out = run_scan(repo)
+    assert code != 0, out
+    assert "never both" in out
+
+
+def test_per_entry_without_a_base_is_REFUSED_at_config_load(tmp_path):
+    cfg = DERIVED_CONFIG.replace("expected_value_count_base = 1\n", "")
+    repo = make_repo(tmp_path, config=cfg, leak=False)
+    code, out = run_scan(repo)
+    assert code != 0, out
+    assert "needs expected_value_count_base" in out
+
+
+def test_a_per_entry_spec_without_a_pointer_is_REFUSED(tmp_path):
+    cfg = DERIVED_CONFIG.replace("state/rooms.json#/rooms", "state/rooms.json")
+    repo = make_repo(tmp_path, config=cfg, leak=False)
+    code, out = run_scan(repo)
+    assert code != 0, out
+    assert "path#/json/pointer" in out
+
+
+def test_derived_count_refuses_while_a_REAL_LEAK_is_present(tmp_path):
+    """Arrangement parity with the rest of this file: the derived check must hold
+    over a fixture that CAN go dirty, so a refusal here is never 'nothing was
+    there anyway'."""
+    repo = make_repo(tmp_path, config=DERIVED_CONFIG, leak=True)
+    _write_rooms(repo, [{"id": "basil", "key": BASIL_KEY}, {"id": "keyless"}])
+    code, out = run_scan(repo)
+    assert code == REFUSE, out
+    assert ROOM_KEY not in out

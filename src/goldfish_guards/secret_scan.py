@@ -187,6 +187,48 @@ def _load_watched_values(root, cfg, refusals):
     return {v: sorted(h) for v, h in values.items()}, sorted(homes)
 
 
+def _count_entries(path, pointer):
+    """How many entries sit at `pointer` inside a JSON file. Returns (count, error).
+
+    #119. This counts STRUCTURE — how many rooms exist — so the expectation can be
+    compared against the values actually found. It deliberately does NOT look at the
+    secrets themselves: counting those would make the check compare the watched set
+    to itself, which can never refuse.
+
+    Every failure path returns an ERROR, never a count. A count of zero from an
+    unreadable file or a bad pointer would silently shrink the expectation to the
+    base and let every per-entry secret vanish unnoticed — the exact silent shrink
+    this ticket exists to close, reintroduced through its own repair.
+    """
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as e:
+        return None, f"unreadable ({e})"
+    except ValueError as e:
+        return None, f"not valid JSON ({e})"
+    node = data
+    for seg in [s for s in pointer.split("/") if s]:
+        if isinstance(node, dict):
+            if seg not in node:
+                return None, f"pointer segment {seg!r} not found"
+            node = node[seg]
+        elif isinstance(node, list):
+            try:
+                node = node[int(seg)]
+            except (ValueError, IndexError):
+                return None, f"pointer segment {seg!r} is not a valid list index"
+        else:
+            return None, f"pointer segment {seg!r} descends into a {type(node).__name__}"
+    if not isinstance(node, (list, dict)):
+        return None, (
+            f"pointer resolves to a {type(node).__name__}, which has no entries to "
+            f"count — point at the list or object whose members each carry a secret"
+        )
+    return len(node), None
+
+
 def _read_manifest(root, rel):
     """The CONSUMER's own read-set — the one truth source that is not this config.
 
@@ -285,6 +327,41 @@ def _verify_watch_set(root, cfg, homes, n_values, refusals):
             )
         else:
             verified.append(f"expected_value_count={n_values}")
+    if cfg.expected_value_count_base is not None:
+        # #119: expectation DERIVED from structure, compared against values found.
+        # Not derived from the values themselves — that would be circular and could
+        # never refuse. See config.py for why the obvious version is worse than the bug.
+        expected = cfg.expected_value_count_base
+        terms = [f"base {cfg.expected_value_count_base}"]
+        broken = False
+        for spec in cfg.expected_value_count_per_entry:
+            rel, _, pointer = spec.partition("#/")
+            entries, err = _count_entries(root / rel, pointer)
+            if err:
+                # A pointer that cannot be resolved must REFUSE, never contribute 0.
+                # Counting zero would quietly shrink the expectation to the base and
+                # let every per-entry value disappear unnoticed — the silent-shrink
+                # this ticket exists to close, reintroduced through the repair.
+                refusals.append(
+                    f"expected_value_count_per_entry {spec}: {err} — an unresolvable "
+                    f"pointer cannot contribute zero; that would shrink the expectation "
+                    f"to the base and hide exactly the drift this check is for"
+                )
+                broken = True
+                continue
+            expected += entries
+            terms.append(f"{entries} from {spec}")
+        if not broken:
+            if expected != n_values:
+                refusals.append(
+                    f"derived expected_value_count = {expected} ({' + '.join(terms)}) "
+                    f"but {n_values} value(s) watched — either a fixed home changed "
+                    f"shape, or an entry exists whose secret is missing"
+                )
+            else:
+                verified.append(
+                    f"derived expected_value_count={n_values} ({' + '.join(terms)})"
+                )
     if verified:
         return "VERIFIED against " + " + ".join(verified)
     return (
